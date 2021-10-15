@@ -1,0 +1,382 @@
+---
+title: "B167586"
+output:
+  word_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r libraries, results="hide" }
+            ## Import Libraries ##
+library(readr)
+library(tigerstats)
+library(plyr)
+library(Hmisc)
+library(dplyr)
+library('fastDummies')
+library(ggplot2)
+library(caTools)
+library(corrgram)
+library(ROSE)
+library(caret)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+```
+
+```{r Import}
+                   ## Import Data ##
+flight_data <- read.csv("~/Desktop/School/Edinburgh/Pred_Analytics/ind_proj/flights_2008.csv")
+wn_all <- flight_data[ which(flight_data$UniqueCarrier == 'WN'),] #southwest airlines data
+                   ## Create Delayed Variable ##
+wn_all$Delayed <- ifelse(test=wn_all$DepDelay > 15, yes='Delayed', no='NotDelayed')
+xtabs(~Delayed,data=wn_all)
+rowPerc(xtabs(~Delayed,data=wn_all))
+
+```
+
+```{r Missing Values, results="hide"}
+sum(!complete.cases(wn_all$Delayed)) #all flights have a delayed or not delayed status
+sum(!complete.cases(wn_all)) #174043 incomplete observations
+sort(table(wn_all$Origin))
+
+```
+
+```{r Create Origin Vars, results="hide"}
+wn_origins10 <- wn_all[ which(wn_all$Origin == 'HOU'| wn_all$Origin == 'BWI'| wn_all$Origin == 'PHX'| wn_all$Origin == 'MDW'|wn_all$Origin == 'LAS'| wn_all$Origin == 'SAN'| wn_all$Origin == 'MCO'| wn_all$Origin == 'OAK'| wn_all$Origin == 'LAX'| wn_all$Origin == 'DAL'),]
+
+xtabs(~Origin,data=wn_origins10)
+```
+
+```{r Correlation, results="hide"}
+corr_matrix1 <- cor(wn_origins10[, c("DepTime","CRSDepTime","ArrTime",
+                                    "CRSArrTime","ActualElapsedTime","CRSElapsedTime",
+                                    "ArrDelay","DepDelay","Distance", "TaxiIn", "TaxiOut")])
+round(corr_matrix1, 2) #Missing values causing issues in table. Will address later if still an issue
+```
+
+```{r Create Seasons}
+wn_use <- subset(wn_origins10[, c("Month","DayofMonth","DayOfWeek",
+                                      "CRSDepTime","Origin","Distance","Delayed")]) 
+#rowPerc(xtabs(~Month,data=wn_use))
+wn_use$season[wn_use$Month == 1 |wn_use$Month == 2 | wn_use$Month == 12] <- "winter"
+wn_use$season[wn_use$Month == 3 |wn_use$Month == 4 | wn_use$Month == 5] <- "spring"
+wn_use$season[wn_use$Month == 6 |wn_use$Month == 7 | wn_use$Month == 8] <- "summer"
+wn_use$season[wn_use$Month == 9 |wn_use$Month == 10 | wn_use$Month == 11] <- "fall"
+#rowPerc(xtabs(~season,data=wn_use))
+```
+
+```{r Delete Month, results="hide"}
+rowPerc(xtabs(~DayOfWeek,data=wn_use))
+#Going to keep all days of the week
+```
+```{r}
+wn_use2 = subset(wn_use, select = -c(Month)) #deleting month b/c season variable
+```
+
+```{r}
+wn_Wdum  <- dummy_cols(wn_use2, select_columns = c('DayOfWeek', 'Origin','season'))
+wn_Wdum$Delayed <- as.factor(wn_Wdum$Delayed) 
+wn_Wdum$DayOfWeek_1 <- as.factor(wn_Wdum$DayOfWeek_1) 
+wn_Wdum$DayOfWeek_2 <- as.factor(wn_Wdum$DayOfWeek_2) 
+wn_Wdum$DayOfWeek_3 <- as.factor(wn_Wdum$DayOfWeek_3) 
+wn_Wdum$DayOfWeek_4 <- as.factor(wn_Wdum$DayOfWeek_4) 
+wn_Wdum$DayOfWeek_5 <- as.factor(wn_Wdum$DayOfWeek_5) 
+wn_Wdum$DayOfWeek_6 <- as.factor(wn_Wdum$DayOfWeek_6)
+wn_Wdum$DayOfWeek_7 <- as.factor(wn_Wdum$DayOfWeek_7) 
+
+wn_Wdum$Origin_BWI <- as.factor(wn_Wdum$Origin_BWI) 
+wn_Wdum$Origin_DAL <- as.factor(wn_Wdum$Origin_DAL)
+wn_Wdum$Origin_HOU <- as.factor(wn_Wdum$Origin_HOU)
+wn_Wdum$Origin_LAS <- as.factor(wn_Wdum$Origin_LAS)
+wn_Wdum$Origin_LAX <- as.factor(wn_Wdum$Origin_LAX)
+wn_Wdum$Origin_MCO <- as.factor(wn_Wdum$Origin_MCO)
+wn_Wdum$Origin_MDW <- as.factor(wn_Wdum$Origin_MDW)
+wn_Wdum$Origin_OAK <- as.factor(wn_Wdum$Origin_OAK)
+wn_Wdum$Origin_PHX <- as.factor(wn_Wdum$Origin_PHX)
+wn_Wdum$Origin_SAN <- as.factor(wn_Wdum$Origin_SAN)
+
+wn_Wdum$season_spring <- as.factor(wn_Wdum$season_spring)
+wn_Wdum$season_fall <- as.factor(wn_Wdum$season_fall)
+wn_Wdum$season_summer <- as.factor(wn_Wdum$season_summer)
+wn_Wdum$season_winter <- as.factor(wn_Wdum$season_winter)
+```
+
+```{r Total Observation, results="hide"}
+wn_data_forMOdel <- subset(wn_Wdum[, c(3,5,6,8:28)])
+nrow(wn_data_forMOdel) #189924 flights
+```
+
+```{r}
+xtabs(~ Delayed, data=wn_data_forMOdel) # data is imbalanced
+```
+
+```{r}
+rowPerc(xtabs(~ Delayed, data=wn_data_forMOdel))
+#Delayed NotDelayed Total
+#60.57      39.43   100
+wn_data_forMOdel$Delayed <- as.factor(wn_data_forMOdel$Delayed)
+```
+
+```{r Create Sets}
+set.seed(42)
+training_prop <- 0.50
+validation_prop <- 0.25
+test_prop <- 0.25
+
+sampleSizeTraining <- floor(training_prop * nrow(wn_data_forMOdel))
+sampleSizeValidation <- floor(validation_prop * nrow(wn_data_forMOdel))
+sampleSizeTest       <- floor(test_prop * nrow(wn_data_forMOdel))
+
+indicesTraining    <- sort(sample(seq_len(nrow(wn_data_forMOdel)), size=sampleSizeTraining))
+indicesNotTraining <- setdiff(seq_len(nrow(wn_data_forMOdel)), indicesTraining)
+indicesValidation  <- sort(sample(indicesNotTraining, size=sampleSizeValidation))
+indicesTest        <- setdiff(indicesNotTraining, indicesValidation)
+
+wn_Training   <- wn_data_forMOdel[indicesTraining, ]
+wn_Validation <- wn_data_forMOdel[indicesValidation, ]
+wn_Test       <- wn_data_forMOdel[indicesTest, ]
+
+xtabs(~ Delayed, data=wn_Training) #Training Dataset is imbalanced
+xtabs(~ Delayed, data=wn_Validation) #Validation set is imbalanced
+xtabs(~ Delayed, data=wn_Test) #Validation set is imbalanced
+```
+
+```{r Balance Training Set}
+######## FIX CLASS IMBALANCE OF TRAINING SET WITH HYBRID (over and undersampling) METHOD
+nrow(wn_Training)
+wn_train_hybrid <- ovun.sample(Delayed ~ ., data = wn_Training, method = "both", p=0.5, N=94962, seed = 1)$data
+table(wn_train_hybrid$Delayed)
+```
+
+```{r Create Logistic Regression, results="hide"}
+############# START LOGISTIC REGRESSION ######### USING HYBRID BALANCED DATA  ##########
+
+wn_logisitc_hybrid <- glm(Delayed ~ .,
+                           data = wn_train_hybrid, family = binomial)
+summary(wn_logisitc_hybrid)
+```
+
+```{r Find Correlations Between Distance and Log Odds of Delayed, results="hide"}
+plot(wn_logisitc_hybrid$fitted.values, wn_train_hybrid$Distance,
+     main = 'Log Odds of Delayed vs. Distance',xlab='Log Odds of Delayed',
+     ylab='Distance')
+```
+
+```{r Find Correlations Between Distance and Log Odds of Delay}
+corr_log_odds_distance<-cor(wn_logisitc_hybrid$fitted.values,
+                            wn_train_hybrid$Distance)
+round(corr_log_odds_distance, 2)
+```
+
+```{r Find Correlations Between CRSDepTime and Log Odds of Delay,results="hide"}
+plot(wn_logisitc_hybrid$fitted.values, wn_train_hybrid$CRSDepTime,
+          main = 'Log Odds of Delayed vs.CRSDepTime',xlab='Log Odds of Delayed',
+     ylab='Scheduled Departure Time')
+```
+
+
+```{r Correlations Between CRSDepTime and Log Odds of Delay}
+corr_log_odds_crsdeptime<-cor(wn_logisitc_hybrid$fitted.values,wn_train_hybrid$CRSDepTime)
+round(corr_log_odds_crsdeptime, 2)
+```
+
+```{r Find VIF, results="hide"}
+#Model for VIF
+log_reg_vif <-glm(Delayed ~ . - DayOfWeek_7 - Origin_SAN - season_winter,
+                  data = wn_train_hybrid, family = binomial)
+#manualy removed reference variables so vif would work
+car::vif(log_reg_vif)
+```
+
+
+```{r LogReg Training Prediction, results = "hide"}
+probs_hyridTrain <- wn_logisitc_hybrid %>% predict(wn_train_hybrid, type = "response")
+head(probs_hyridTrain)
+
+predictins_hybridTrain <- ifelse(probs_hyridTrain > 0.5, "Delayed", "NotDelayed")
+predictins_hybridTrain <- as.factor(predictins_hybridTrain)
+wn_train_hybrid$Delayed <- as.factor(wn_train_hybrid$Delayed)
+confusionMatrix(predictins_hybridTrain, factor(wn_train_hybrid$Delayed)) 
+```
+
+```{r}
+roc_hybridtrain <- roc(wn_train_hybrid$Delayed, probs_hyridTrain)
+plot(roc_hybridtrain)
+roc_hybridtrain$auc #0.6215
+
+```
+
+```{r LogReg Validation Predictions, results="hide"}
+######### Validation SET Logistic Regression #######
+probs_hyridValidation <- wn_logisitc_hybrid %>% predict(wn_Validation, type = "response")
+
+predictins_hybridValidation <- ifelse(probs_hyridValidation > 0.5, "Delayed", "NotDelayed")
+predictins_hybridValidation <- as.factor(predictins_hybridValidation)
+wn_Validation$Delayed <- as.factor(wn_Validation$Delayed)
+confusionMatrix(predictins_hybridValidation, factor(wn_Validation$Delayed))
+```
+
+```{r LogReg Validation Confusion Matrix Values}
+print('Accuracy : 0.4127')
+print('Sensitivity : 0.4030')          
+print('Specificity : 0.4274')
+```
+
+```{r LogReg Validation ROC Curve, results="hide"}
+#Area under the ROC curve
+roc_hybridValidation <- roc(wn_Validation$Delayed, probs_hyridValidation)
+plot(roc_hybridValidation,legacy.axes = TRUE,asp = NA)
+```
+
+```{r LogReg Validation  AUC}
+roc_hybridValidation$auc
+```
+
+```{r Create Decision Tree}
+#################  START Decision Tree ######### USING HYBRID BALANCED DATA ##############
+wn_tree_hydrib <- rpart(Delayed ~ ., data=wn_train_hybrid)
+summary(wn_tree_hydrib)
+```
+
+```{r Plot Decision Tree}
+rpart.plot(wn_tree_hydrib)
+```
+```{r Decesion Tree Training Predictions, results="hide"}
+predictions_tree_hybridTrain <- predict(wn_tree_hydrib, type="class")
+head(predictions_tree_hybridTrain)
+
+predictions_tree_hybridTrain <- as.factor(predictions_tree_hybridTrain)
+wn_train_hybrid$Delayed <- as.factor(wn_train_hybrid$Delayed)
+confusionMatrix(predictions_tree_hybridTrain, factor(wn_train_hybrid$Delayed))
+```
+```{r Decision Tree Training ROC/AUC, result="hide"}
+roc_tree_probabiliries_train <- predict(wn_tree_hydrib, newdata =wn_train_hybrid, type="vector")
+head(roc_tree_probabiliries_train)
+roc_tree_train_hybrid <- roc(wn_train_hybrid$Delayed, roc_tree_probabiliries_train)
+roc_tree_train_hybrid$auc
+```
+
+
+```{r Decesion Tree Validation Predictions, results="hide"}
+###### ON VALIDATION SET
+predictions_tree_hybridValidation <- predict(wn_tree_hydrib, newdata = wn_Validation, type="class")
+head(predictions_tree_hybridValidation)
+
+predictions_tree_hybridValidation <- as.factor(predictions_tree_hybridValidation)
+wn_Validation$Delayed <- as.factor(wn_Validation$Delayed)
+confusionMatrix(predictions_tree_hybridValidation, factor(wn_Validation$Delayed))
+```
+
+```{r Confusion Matrix Info}
+print('Accuracy : 0.5867')
+print('Sensitivity : 0.6301')          
+print('Specificity : 0.5215')
+```
+
+```{r Decision Tree Validatio ROC Curve, results="hide"}
+#Area under the ROC curve
+roc_tree_hybridValidation <- predict(wn_tree_hydrib, newdata = wn_Validation, type="vector")
+roc_tree_hybridValidation <- roc(wn_Validation$Delayed, roc_tree_hybridValidation)
+plot(roc_tree_hybridValidation,legacy.axes = TRUE,asp = NA)
+```
+
+```{r Decision Tree Validation AUC Value}
+roc_tree_hybridValidation$auc
+```
+
+```{r Create Random Forest Model, results="hide"}
+###################### RANDOM FORESTS #######################################3
+#Make the forest
+wn_RF_hydrid <- randomForest(Delayed~., data = wn_train_hybrid)
+summary(wn_RF_hydrid)
+```
+
+```{r Find Important Variables, result="hide"}
+importance(wn_RF_hydrid) 
+varImpPlot(wn_RF_hydrid,main = 'Predictor Importance by Mean Decrease in Gini Impurity')
+```
+```{r Random Forest Prediction Training Set, results = "hide"}
+### Training Set Predictions ####
+predictions_RF_hybridTrain <- predict(wn_RF_hydrid, wn_train_hybrid,  type="class")
+head(predictions_RF_hybridTrain)
+
+
+predictions_RF_hybridTrain <- as.factor(predictions_RF_hybridTrain)
+wn_train_hybrid$Delayed <- as.factor(wn_train_hybrid$Delayed)
+confusionMatrix(predictions_RF_hybridTrain, factor(wn_train_hybrid$Delayed))
+```
+
+```{r Random Forest Training ROC, results="hide"}
+rf_prediction_TRAIN <- predict(wn_RF_hydrid, wn_train_hybrid, type = "prob")
+head(rf_prediction_TRAIN)
+ROC_rf_TRAIN <- roc(wn_train_hybrid$Delayed, rf_prediction_TRAIN[,2])
+plot(ROC_rf_TRAIN,legacy.axes = TRUE,asp = NA)
+```
+
+```{r Random Forest Training AUC, results = "hide"}
+AUC_rf_TRAIN <- auc(ROC_rf_TRAIN)
+AUC_rf_TRAIN
+```
+
+```{r Random Forest Prediction Validation Set, results = "hide"}
+######### RF PREDICTIONS #########
+ ########### ON VALIDATION SET ###############
+predictions_RF_hybridValidation <- predict(wn_RF_hydrid, newdata = wn_Validation, type="class")
+```
+
+
+```{r Confusion Matrix code, results="hide"}
+predictions_RF_hybridValidation <- as.factor(predictions_RF_hybridValidation)
+wn_Validation$Delayed <- as.factor(wn_Validation$Delayed)
+confusionMatrix(predictions_RF_hybridValidation, factor(wn_Validation$Delayed))
+```
+
+```{r CM Information, results="hide"}
+print('Accuracy : 0.5889')
+print('Sensitivity : 0.5788')          
+print('Specificity : 0.6042')
+```
+
+```{r RF Validtion ROC Curve, results="hide"}
+#Predictions for ROC/AUC
+rf_prediction_VALIDATION <- predict(wn_RF_hydrid, wn_Validation, type = "prob")
+ROC_rf_VALIDATION <- roc(wn_Validation$Delayed, rf_prediction_VALIDATION[,2])
+plot(ROC_rf_VALIDATION,legacy.axes = TRUE,asp = NA)
+```
+
+```{r Random Forest Validation AUC}
+AUC_rf_VALIDATION <- auc(ROC_rf_VALIDATION)
+AUC_rf_VALIDATION 
+```
+
+```{r Random Forest With Test Data}
+############## USING RANDOM FOREST ON TEST DATA! ############
+predictions_RF_hybridTEST <- predict(wn_RF_hydrid, newdata = wn_Test, type="class")
+predictions_RF_hybridTEST <- as.factor(predictions_RF_hybridTEST)
+wn_Test$Delayed <- as.factor(wn_Test$Delayed)
+confusionMatrix(predictions_RF_hybridTEST, factor(wn_Test$Delayed))
+```
+
+```{r Confusion Matrix Information}
+print('Accuracy : 0.5866')
+print('Sensitivity : 0.5778')          
+print('Specificity : 0.6004')
+```
+
+```{r Random Forest Test Set ROC Curve}
+rf_prediction_TEST <- predict(wn_RF_hydrid, wn_Test, type = "prob")
+ROC_rf_TEST <- roc(wn_Test$Delayed, rf_prediction_TEST[,2])
+plot(ROC_rf_TEST,legacy.axes = TRUE, asp = NA)
+```
+
+```{r AUC for Random Forest on Test Data}
+AUC_rf_Test <- auc(ROC_rf_TEST)
+AUC_rf_Test 
+```
+
+
+
